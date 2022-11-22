@@ -126,304 +126,6 @@ __all__ = ['RemoveCircuitPulseNoise', 'Gain', 'ByteBuffer', 'Indexes', 'SignalDe
            'Read_source_amp', 'rotate_view', 'visulize_Egg', 'setting_2D_Vertex', 'Read_2D_source_amp']
 
 
-def RemoveCircuitPulseNoise(data):
-    data_length = len(data)
-    data.append(np.median(data).astype(np.int32))
-    for i in range(data_length + 1):
-        abs_data = np.abs(data)
-        max_value = abs_data.max()
-        max_index = int(np.where(abs_data == max_value)[0][0])
-        indicator = abs_data[max_index + 1] * 100
-        if max_value > indicator:
-            data[max_index] = data[max_index + 1]
-            print(i)
-            continue
-        else:
-            break
-    del data[-1]
-
-    return data
-
-
-
-
-def ByteBuffer(data_segment):
-    x = data_segment[0]
-    y = data_segment[1]
-    z = data_segment[2]
-
-    u16 = np.frombuffer(x.tobytes() + y.tobytes(), dtype=np.uint16)[0]
-    u32 = np.frombuffer(u16.tobytes() + np.uint16(z).tobytes(), dtype=np.uint32)[0]
-    i32 = np.int32(u32)
-
-    if i32 > 8388607:
-        i32 = i32 - 16777216
-
-    return i32
-
-
-def Indexes(decimating_factor, index_info_box):
-    for i, index_info in enumerate(index_info_box):
-        if i == 0:
-            trigger_indexes = np.array(index_info[:, 0])
-            response_indexes = np.array(index_info[:, 1])
-        else:
-            trigger_indexes = np.append(trigger_indexes, index_info[:, 0])
-            response_indexes = np.append(response_indexes, index_info[:, 1])
-
-    if decimating_factor == 0 or decimating_factor == 1:  # default
-        return trigger_indexes, response_indexes
-
-    elif decimating_factor == 2:
-        for j in range(int((time_duration * sampling_rate) / 2)):
-            if j == 0:
-                trigger_indexes = np.array(
-                    trigger_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[i].max())
-                response_indexes = np.array(
-                    response_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[i].max())
-            else:
-                trigger_indexes = np.append(trigger_indexes,
-                                            trigger_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[
-                                                i].max())
-                response_indexes = np.append(response_indexes,
-                                             response_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[
-                                                 i].max())
-        return trigger_indexes, response_indexes
-
-    else:
-        raise ValueError('An incorrect value was inputted. Available values are 0, 1, or 2.')
-
-
-def SignalDecimate(signal, sampling_rate, decimating_factor):
-    signal_out = signal.reshape(int(sampling_rate / decimating_factor), decimating_factor)[:, 0]
-    return signal_out
-
-
-def ReadIndexies(path, start, end, decimating_factor=1):
-    KDF_data_size = os.path.getsize(path)  # file size in bytes
-    with open(path, 'br') as f:
-        code = f.read(1)
-        BIOSEMI = f.read(7).decode('ascii').strip()
-        subject_info = f.read(80).decode('ascii').strip()  # Require to decode Patient name
-        recording_info = f.read(80).decode('ascii').strip()
-        date_info = f.read(8).decode('ascii').strip()  # DD.MM.YY
-        for i, value in enumerate(date_info.split('.')[::-1]):
-            if i == 0:
-                YY = int('20' + value)
-            elif i == 1:
-                MM = int(value)
-            elif i == 2:
-                DD = int(value)
-        time_info = f.read(8).decode('ascii').strip()  # hh.mm.ss
-        for i, value in enumerate(time_info.split('.')):
-            if i == 0:
-                hh = int(value)
-            elif i == 1:
-                mm = int(value)
-            elif i == 2:
-                ss = int(value)
-        datetime_info = datetime.datetime(YY, MM, DD, hh, mm, ss)  # datetime format
-        header_byte = int(f.read(8).decode('ascii').strip())
-        data_format = f.read(44).decode('ascii').strip()  # 24 bit
-        data_records = int(f.read(8).decode('ascii').strip())  # seconds / -1 means unknown / interger
-        duration = int(f.read(8).decode('ascii').strip())
-        channels_number = int(f.read(4).decode('ascii').strip())
-        channel_labels = f.read(16 * (channels_number)).decode('ascii')
-        channel_labels = [channel_labels[i * 16:(i + 1) * 16].strip() for i in range(channels_number - 1)]
-        coil_types = f.read(40 * (channels_number)).decode('ascii')
-        units = f.read(8 * (channels_number)).decode('ascii')
-        minimum_range = f.read(8 * (channels_number)).decode('ascii')
-        digital_minimum = f.read(8 * (channels_number)).decode('ascii')
-        digital_maxmum = f.read(8 * (channels_number)).decode('ascii')
-        prefiltering = f.read(80).decode('ascii').strip()
-        sampling_rate = int(f.read(8).decode('ascii'))
-
-        recording_time = int((KDF_data_size - header_byte) / (
-                    channels_number * sampling_rate * 3))  # mesearment time have to be equal to data_records time
-
-        if start < 0:
-            start = 0
-        elif start > 0:
-            datetime_info = datetime_info + datetime.timedelta(seconds=start)
-        start = min(recording_time - 1, start)
-        offset = start * (sampling_rate * 3) * (channels_number)
-        count = 3 * sampling_rate
-        time_duration = min(recording_time, recording_time - start)
-
-        bdata = np.fromfile(f, offset=offset, dtype=np.uint8)
-        datasets = bdata.reshape(int(bdata.shape[0] / count), count)
-        index_info_box = list()
-        for time, dataset in enumerate(np.array_split(datasets, time_duration)):
-            index_info = dataset[-1].reshape(sampling_rate, 3)
-            if time < end - start:
-                index_info_box.append(index_info)
-            else:
-                break
-        f.close()
-
-    metainfo = np.dtype(np.float32, metadata={'BIOSEMI': BIOSEMI,
-                                              'subject_info': subject_info,
-                                              't0': datetime_info,
-                                              'channels number': channels_number,
-                                              'duration': end - start,
-                                              'sampling rate': sampling_rate,
-                                              'prefiltering': prefiltering
-                                              })
-    trigger_train, response_train = Indexes(decimating_factor, index_info_box)
-    trigger_train = trigger_train.astype(metainfo)
-    response_train = response_train.astype(metainfo)
-
-    return trigger_train, response_train
-
-
-def ReadTimeseries(path, start, end, decimating_factor=1, gainfactor=1):
-    KDF_data_size = os.path.getsize(path)  # file size in bytes
-    with open(path, 'br') as f:
-        code = f.read(1)
-        BIOSEMI = f.read(7).decode('ascii').strip()
-
-        subject_info = f.read(80).decode('ascii').strip()  # Require to decode Patient name
-        recording_info = f.read(80).decode('ascii').strip()
-        try:
-            system_gain = int(recording_info.split(' ')[4])
-        except:
-            system_gain = 3
-
-        date_info = f.read(8).decode('ascii').strip()  # DD.MM.YY
-        for i, value in enumerate(date_info.split('.')[::-1]):
-            if i == 0:
-                YY = int('20' + value)
-            elif i == 1:
-                MM = int(value)
-            elif i == 2:
-                DD = int(value)
-        time_info = f.read(8).decode('ascii').strip()  # hh.mm.ss
-        for i, value in enumerate(time_info.split('.')):
-            if i == 0:
-                hh = int(value)
-            elif i == 1:
-                mm = int(value)
-            elif i == 2:
-                ss = int(value)
-
-        datetime_info = datetime.datetime(YY, MM, DD, hh, mm, ss)  # datetime format
-
-        header_byte = int(f.read(8).decode('ascii').strip())
-        data_format = f.read(44).decode('ascii').strip()  # 24 bit
-        data_records = int(f.read(8).decode('ascii').strip())  # seconds / -1 means unknown / interger
-        duration = int(f.read(8).decode('ascii').strip())
-        channels_number = int(f.read(4).decode('ascii').strip())
-
-        channel_labels = f.read(16 * (channels_number)).decode('ascii')
-        channel_labels = [channel_labels[i * 16:(i + 1) * 16].strip() for i in range(channels_number - 1)]
-
-        coil_types = f.read(40 * (channels_number)).decode('ascii')
-        coil_types = [coil_types[i * 40:(i + 1) * 40].strip() for i in range(channels_number - 1)]
-
-        units = f.read(8 * (channels_number)).decode('ascii')
-        units = [units[i * 8:(i + 1) * 8].strip() for i in range(channels_number - 1)]
-
-        minimum_range = f.read(8 * (channels_number)).decode('ascii')
-        minimum_range = np.array([float(minimum_range[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
-
-        maximum_range = f.read(8 * (channels_number)).decode('ascii')
-        maximum_range = np.array([float(maximum_range[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
-
-        digital_minimum = f.read(8 * (channels_number)).decode('ascii')
-        digital_minimum = np.array(
-            [float(digital_minimum[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
-
-        digital_maxmum = f.read(8 * (channels_number)).decode('ascii')
-        digital_maxmum = np.array(
-            [float(digital_maxmum[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
-
-        prefiltering = f.read(80).decode('ascii').strip()
-        sampling_rate = int(f.read(8).decode('ascii'))
-
-        recording_time = int((KDF_data_size - header_byte) / (
-                    channels_number * sampling_rate * 3))  # mesearment time have to be equal to data_records time
-
-        gain = Gain(system_gain, minimum_range, maximum_range)
-
-        if start < 0:
-            start = 0
-        elif start > 0:
-            datetime_info = datetime_info + datetime.timedelta(seconds=start)
-        start = min(recording_time - 1, start)
-        offset = start * (sampling_rate * 3) * (channels_number)
-        count = 3 * sampling_rate
-        time_duration = min(recording_time, recording_time - start)
-
-        bulkdataset = list()
-
-        bdata = np.fromfile(f, offset=offset, dtype=np.uint8)
-        datasets = bdata.reshape(int(bdata.shape[0] / count), count)
-        index_info_box = list()
-        for time, dataset in enumerate(np.array_split(datasets, time_duration)):
-            ch_dataset = np.delete(dataset, -1, axis=0)
-            if time < end - start:
-                for i, ch_data in enumerate(ch_dataset):
-                    data = ch_data.reshape(sampling_rate, 3)
-                    bin = list()
-                    for row in data:
-                        bin.append(ByteBuffer(row))
-
-                    RCPN = np.array(RemoveCircuitPulseNoise(bin)).astype(np.int32)
-                    decimated_signal = SignalDecimate(RCPN, sampling_rate, decimating_factor)
-
-                    if i == 0:
-                        out_data = decimated_signal
-                    else:
-                        out_data = np.vstack((out_data, decimated_signal))
-                bulkdataset.append(out_data)
-            else:
-                break
-        f.close()
-
-    package = dict()
-    if gain.shape[0] == 0:
-        for i, channel_label in enumerate(channel_labels):
-            metainfo = np.dtype(np.int32, metadata={'BIOSEMI': BIOSEMI,
-                                                    'subject_info': subject_info,
-                                                    't0': datetime_info,
-                                                    'duration': end - start,
-                                                    'channel label': channel_label,
-                                                    'coil type': coil_types[i],
-                                                    'unit': units[i],
-                                                    'sampling rate': sampling_rate,
-                                                    'data format': data_format,
-                                                    'prefiltering': prefiltering
-                                                    })
-            for time, timeseries in enumerate(bulkdataset):
-                if time == 0:
-                    package[channel_label] = timeseries[i].astype(metainfo)
-                else:
-                    package[channel_label] = np.append(package[channel_label], timeseries[i].astype(metainfo))
-
-    else:
-        gain = np.divide(gain * gainfactor, 838860.8)
-        for i, channel_label in enumerate(channel_labels):
-            metainfo = np.dtype(np.float32, metadata={'BIOSEMI': BIOSEMI,
-                                                      'subject_info': subject_info,
-                                                      't0': datetime_info,
-                                                      'duration': end - start,
-                                                      'channel label': channel_label,
-                                                      'coil type': coil_types[i],
-                                                      'unit': units[i],
-                                                      'sampling rate': sampling_rate,
-                                                      'data format': data_format,
-                                                      'prefiltering': prefiltering
-                                                      })
-            for time, timeseries in enumerate(bulkdataset):
-                if time == 0:
-                    package[channel_label] = (timeseries[i] * gain[i]).astype(metainfo)
-                else:
-                    package[channel_label] = np.append(package[channel_label],
-                                                       (timeseries[i] * gain[i]).astype(metainfo))
-
-    return package
-
-
 ## This Function is related to angle,move in 3D or 2D position Vector
 ## derived from this Function Rotation, Move(All Position SHIFT) Function, projection Matrix
 
@@ -1582,4 +1284,305 @@ def Gain(system_gain, minimum_range, maximum_range):
         raise ValueError('An incorrect value was inputted. Available values are 0, 2, or 3.')
 
     return gain
+
+
+
+def RemoveCircuitPulseNoise(data):
+    data_length = len(data)
+    data.append(np.median(data).astype(np.int32))
+    for i in range(data_length + 1):
+        abs_data = np.abs(data)
+        max_value = abs_data.max()
+        max_index = int(np.where(abs_data == max_value)[0][0])
+        indicator = abs_data[max_index + 1] * 100
+        if max_value > indicator:
+            data[max_index] = data[max_index + 1]
+            print(i)
+            continue
+        else:
+            break
+    del data[-1]
+
+    return data
+
+
+
+
+def ByteBuffer(data_segment):
+    x = data_segment[0]
+    y = data_segment[1]
+    z = data_segment[2]
+
+    u16 = np.frombuffer(x.tobytes() + y.tobytes(), dtype=np.uint16)[0]
+    u32 = np.frombuffer(u16.tobytes() + np.uint16(z).tobytes(), dtype=np.uint32)[0]
+    i32 = np.int32(u32)
+
+    if i32 > 8388607:
+        i32 = i32 - 16777216
+
+    return i32
+
+
+def Indexes(decimating_factor, index_info_box):
+    for i, index_info in enumerate(index_info_box):
+        if i == 0:
+            trigger_indexes = np.array(index_info[:, 0])
+            response_indexes = np.array(index_info[:, 1])
+        else:
+            trigger_indexes = np.append(trigger_indexes, index_info[:, 0])
+            response_indexes = np.append(response_indexes, index_info[:, 1])
+
+    if decimating_factor == 0 or decimating_factor == 1:  # default
+        return trigger_indexes, response_indexes
+
+    elif decimating_factor == 2:
+        for j in range(int((time_duration * sampling_rate) / 2)):
+            if j == 0:
+                trigger_indexes = np.array(
+                    trigger_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[i].max())
+                response_indexes = np.array(
+                    response_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[i].max())
+            else:
+                trigger_indexes = np.append(trigger_indexes,
+                                            trigger_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[
+                                                i].max())
+                response_indexes = np.append(response_indexes,
+                                             response_indexes.reshape(int((time_duration * sampling_rate) / 2), 2)[
+                                                 i].max())
+        return trigger_indexes, response_indexes
+
+    else:
+        raise ValueError('An incorrect value was inputted. Available values are 0, 1, or 2.')
+
+
+def SignalDecimate(signal, sampling_rate, decimating_factor):
+    signal_out = signal.reshape(int(sampling_rate / decimating_factor), decimating_factor)[:, 0]
+    return signal_out
+
+
+def ReadIndexies(path, start, end, decimating_factor=1):
+    KDF_data_size = os.path.getsize(path)  # file size in bytes
+    with open(path, 'br') as f:
+        code = f.read(1)
+        BIOSEMI = f.read(7).decode('ascii').strip()
+        subject_info = f.read(80).decode('ascii').strip()  # Require to decode Patient name
+        recording_info = f.read(80).decode('ascii').strip()
+        date_info = f.read(8).decode('ascii').strip()  # DD.MM.YY
+        for i, value in enumerate(date_info.split('.')[::-1]):
+            if i == 0:
+                YY = int('20' + value)
+            elif i == 1:
+                MM = int(value)
+            elif i == 2:
+                DD = int(value)
+        time_info = f.read(8).decode('ascii').strip()  # hh.mm.ss
+        for i, value in enumerate(time_info.split('.')):
+            if i == 0:
+                hh = int(value)
+            elif i == 1:
+                mm = int(value)
+            elif i == 2:
+                ss = int(value)
+        datetime_info = datetime.datetime(YY, MM, DD, hh, mm, ss)  # datetime format
+        header_byte = int(f.read(8).decode('ascii').strip())
+        data_format = f.read(44).decode('ascii').strip()  # 24 bit
+        data_records = int(f.read(8).decode('ascii').strip())  # seconds / -1 means unknown / interger
+        duration = int(f.read(8).decode('ascii').strip())
+        channels_number = int(f.read(4).decode('ascii').strip())
+        channel_labels = f.read(16 * (channels_number)).decode('ascii')
+        channel_labels = [channel_labels[i * 16:(i + 1) * 16].strip() for i in range(channels_number - 1)]
+        coil_types = f.read(40 * (channels_number)).decode('ascii')
+        units = f.read(8 * (channels_number)).decode('ascii')
+        minimum_range = f.read(8 * (channels_number)).decode('ascii')
+        digital_minimum = f.read(8 * (channels_number)).decode('ascii')
+        digital_maxmum = f.read(8 * (channels_number)).decode('ascii')
+        prefiltering = f.read(80).decode('ascii').strip()
+        sampling_rate = int(f.read(8).decode('ascii'))
+
+        recording_time = int((KDF_data_size - header_byte) / (
+                    channels_number * sampling_rate * 3))  # mesearment time have to be equal to data_records time
+
+        if start < 0:
+            start = 0
+        elif start > 0:
+            datetime_info = datetime_info + datetime.timedelta(seconds=start)
+        start = min(recording_time - 1, start)
+        offset = start * (sampling_rate * 3) * (channels_number)
+        count = 3 * sampling_rate
+        time_duration = min(recording_time, recording_time - start)
+
+        bdata = np.fromfile(f, offset=offset, dtype=np.uint8)
+        datasets = bdata.reshape(int(bdata.shape[0] / count), count)
+        index_info_box = list()
+        for time, dataset in enumerate(np.array_split(datasets, time_duration)):
+            index_info = dataset[-1].reshape(sampling_rate, 3)
+            if time < end - start:
+                index_info_box.append(index_info)
+            else:
+                break
+        f.close()
+
+    metainfo = np.dtype(np.float32, metadata={'BIOSEMI': BIOSEMI,
+                                              'subject_info': subject_info,
+                                              't0': datetime_info,
+                                              'channels number': channels_number,
+                                              'duration': end - start,
+                                              'sampling rate': sampling_rate,
+                                              'prefiltering': prefiltering
+                                              })
+    trigger_train, response_train = Indexes(decimating_factor, index_info_box)
+    trigger_train = trigger_train.astype(metainfo)
+    response_train = response_train.astype(metainfo)
+
+    return trigger_train, response_train
+
+
+def ReadTimeseries(path, start, end, decimating_factor=1, gainfactor=1):
+    KDF_data_size = os.path.getsize(path)  # file size in bytes
+    with open(path, 'br') as f:
+        code = f.read(1)
+        BIOSEMI = f.read(7).decode('ascii').strip()
+
+        subject_info = f.read(80).decode('ascii').strip()  # Require to decode Patient name
+        recording_info = f.read(80).decode('ascii').strip()
+        try:
+            system_gain = int(recording_info.split(' ')[4])
+        except:
+            system_gain = 3
+
+        date_info = f.read(8).decode('ascii').strip()  # DD.MM.YY
+        for i, value in enumerate(date_info.split('.')[::-1]):
+            if i == 0:
+                YY = int('20' + value)
+            elif i == 1:
+                MM = int(value)
+            elif i == 2:
+                DD = int(value)
+        time_info = f.read(8).decode('ascii').strip()  # hh.mm.ss
+        for i, value in enumerate(time_info.split('.')):
+            if i == 0:
+                hh = int(value)
+            elif i == 1:
+                mm = int(value)
+            elif i == 2:
+                ss = int(value)
+
+        datetime_info = datetime.datetime(YY, MM, DD, hh, mm, ss)  # datetime format
+
+        header_byte = int(f.read(8).decode('ascii').strip())
+        data_format = f.read(44).decode('ascii').strip()  # 24 bit
+        data_records = int(f.read(8).decode('ascii').strip())  # seconds / -1 means unknown / interger
+        duration = int(f.read(8).decode('ascii').strip())
+        channels_number = int(f.read(4).decode('ascii').strip())
+
+        channel_labels = f.read(16 * (channels_number)).decode('ascii')
+        channel_labels = [channel_labels[i * 16:(i + 1) * 16].strip() for i in range(channels_number - 1)]
+
+        coil_types = f.read(40 * (channels_number)).decode('ascii')
+        coil_types = [coil_types[i * 40:(i + 1) * 40].strip() for i in range(channels_number - 1)]
+
+        units = f.read(8 * (channels_number)).decode('ascii')
+        units = [units[i * 8:(i + 1) * 8].strip() for i in range(channels_number - 1)]
+
+        minimum_range = f.read(8 * (channels_number)).decode('ascii')
+        minimum_range = np.array([float(minimum_range[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
+
+        maximum_range = f.read(8 * (channels_number)).decode('ascii')
+        maximum_range = np.array([float(maximum_range[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
+
+        digital_minimum = f.read(8 * (channels_number)).decode('ascii')
+        digital_minimum = np.array(
+            [float(digital_minimum[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
+
+        digital_maxmum = f.read(8 * (channels_number)).decode('ascii')
+        digital_maxmum = np.array(
+            [float(digital_maxmum[i * 8:(i + 1) * 8].strip()) for i in range(channels_number - 1)])
+
+        prefiltering = f.read(80).decode('ascii').strip()
+        sampling_rate = int(f.read(8).decode('ascii'))
+
+        recording_time = int((KDF_data_size - header_byte) / (
+                    channels_number * sampling_rate * 3))  # mesearment time have to be equal to data_records time
+
+        gain = Gain(system_gain, minimum_range, maximum_range)
+
+        if start < 0:
+            start = 0
+        elif start > 0:
+            datetime_info = datetime_info + datetime.timedelta(seconds=start)
+        start = min(recording_time - 1, start)
+        offset = start * (sampling_rate * 3) * (channels_number)
+        count = 3 * sampling_rate
+        time_duration = min(recording_time, recording_time - start)
+
+        bulkdataset = list()
+
+        bdata = np.fromfile(f, offset=offset, dtype=np.uint8)
+        datasets = bdata.reshape(int(bdata.shape[0] / count), count)
+        index_info_box = list()
+        for time, dataset in enumerate(np.array_split(datasets, time_duration)):
+            ch_dataset = np.delete(dataset, -1, axis=0)
+            if time < end - start:
+                for i, ch_data in enumerate(ch_dataset):
+                    data = ch_data.reshape(sampling_rate, 3)
+                    bin = list()
+                    for row in data:
+                        bin.append(ByteBuffer(row))
+
+                    RCPN = np.array(RemoveCircuitPulseNoise(bin)).astype(np.int32)
+                    decimated_signal = SignalDecimate(RCPN, sampling_rate, decimating_factor)
+
+                    if i == 0:
+                        out_data = decimated_signal
+                    else:
+                        out_data = np.vstack((out_data, decimated_signal))
+                bulkdataset.append(out_data)
+            else:
+                break
+        f.close()
+
+    package = dict()
+    if gain.shape[0] == 0:
+        for i, channel_label in enumerate(channel_labels):
+            metainfo = np.dtype(np.int32, metadata={'BIOSEMI': BIOSEMI,
+                                                    'subject_info': subject_info,
+                                                    't0': datetime_info,
+                                                    'duration': end - start,
+                                                    'channel label': channel_label,
+                                                    'coil type': coil_types[i],
+                                                    'unit': units[i],
+                                                    'sampling rate': sampling_rate,
+                                                    'data format': data_format,
+                                                    'prefiltering': prefiltering
+                                                    })
+            for time, timeseries in enumerate(bulkdataset):
+                if time == 0:
+                    package[channel_label] = timeseries[i].astype(metainfo)
+                else:
+                    package[channel_label] = np.append(package[channel_label], timeseries[i].astype(metainfo))
+
+    else:
+        gain = np.divide(gain * gainfactor, 838860.8)
+        for i, channel_label in enumerate(channel_labels):
+            metainfo = np.dtype(np.float32, metadata={'BIOSEMI': BIOSEMI,
+                                                      'subject_info': subject_info,
+                                                      't0': datetime_info,
+                                                      'duration': end - start,
+                                                      'channel label': channel_label,
+                                                      'coil type': coil_types[i],
+                                                      'unit': units[i],
+                                                      'sampling rate': sampling_rate,
+                                                      'data format': data_format,
+                                                      'prefiltering': prefiltering
+                                                      })
+            for time, timeseries in enumerate(bulkdataset):
+                if time == 0:
+                    package[channel_label] = (timeseries[i] * gain[i]).astype(metainfo)
+                else:
+                    package[channel_label] = np.append(package[channel_label],
+                                                       (timeseries[i] * gain[i]).astype(metainfo))
+
+    return package
+
+
 
